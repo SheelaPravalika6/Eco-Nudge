@@ -5,232 +5,129 @@ const authMiddleware = require('../middleware/auth');
 const router = express.Router();
 router.use(authMiddleware);
 
-// GET /api/user/stats
-router.get('/stats', (req, res) => {
-  const userId = req.userId;
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+router.get('/stats', async (req, res) => {
+  try {
+    const userRes = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [req.userId] });
+    const user = userRes.rows[0];
+    if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const activitiesLogged = db.prepare('SELECT COUNT(*) as count FROM activities WHERE user_id = ?').get(userId).count;
-  const totalCo2 = db.prepare('SELECT COALESCE(SUM(co2_kg), 0) as total FROM activities WHERE user_id = ?').get(userId).total;
-  const tasksCompleted = db.prepare('SELECT COUNT(*) as count FROM user_tasks WHERE user_id = ?').get(userId).count;
-  const totalPoints = db.prepare('SELECT COALESCE(SUM(points_earned), 0) as total FROM user_tasks WHERE user_id = ?').get(userId).total;
-  const lowestDay = db.prepare(`
-    SELECT MIN(daily_total) as min FROM (
-      SELECT date, SUM(co2_kg) as daily_total FROM activities WHERE user_id = ? GROUP BY date
-    )
-  `).get(userId).min;
+    const pointsRes = await db.execute({ sql: 'SELECT COALESCE(SUM(points_earned), 0) as total FROM user_tasks WHERE user_id = ?', args: [req.userId] });
+    const tasksRes = await db.execute({ sql: 'SELECT COUNT(*) as count FROM user_tasks WHERE user_id = ?', args: [req.userId] });
+    const activitiesRes = await db.execute({ sql: 'SELECT COUNT(*) as count FROM activities WHERE user_id = ?', args: [req.userId] });
+    const totalCo2Res = await db.execute({ sql: 'SELECT COALESCE(SUM(co2_kg), 0) as total FROM activities WHERE user_id = ?', args: [req.userId] });
+    const lowestRes = await db.execute({ sql: 'SELECT MIN(daily_total) as lowest FROM (SELECT date, SUM(co2_kg) as daily_total FROM activities WHERE user_id = ? GROUP BY date)', args: [req.userId] });
 
-  res.json({
-    email: user.email,
-    displayName: user.display_name,
-    city: user.city,
-    country: user.country,
-    units: user.units,
-    memberSince: user.created_at,
-    activitiesLogged,
-    totalCo2: parseFloat((totalCo2 || 0).toFixed(2)),
-    tasksCompleted,
-    totalPoints,
-    lowestDailyCo2: lowestDay ? parseFloat(lowestDay.toFixed(2)) : null,
-    currentStreak: user.current_streak || 0,
-    longestStreak: user.longest_streak || 0,
-    onboarding_done: user.onboarding_done
-  });
+    res.json({
+      email: user.email,
+      display_name: user.display_name,
+      displayName: user.display_name,
+      city: user.city,
+      country: user.country,
+      units: user.units,
+      onboarding_done: user.onboarding_done,
+      current_streak: user.current_streak || 0,
+      longest_streak: user.longest_streak || 0,
+      currentStreak: user.current_streak || 0,
+      longestStreak: user.longest_streak || 0,
+      total_points: Number(pointsRes.rows[0].total),
+      totalPoints: Number(pointsRes.rows[0].total),
+      tasksCompleted: Number(tasksRes.rows[0].count),
+      activitiesLogged: Number(activitiesRes.rows[0].count),
+      totalCo2: parseFloat(Number(totalCo2Res.rows[0].total).toFixed(2)),
+      lowestDailyCo2: lowestRes.rows[0].lowest ? parseFloat(Number(lowestRes.rows[0].lowest).toFixed(2)) : null,
+      memberSince: user.created_at
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch stats' });
+  }
 });
 
-// PUT /api/user/profile
-router.put('/profile', (req, res) => {
-  const { displayName, city, country, units } = req.body;
-  db.prepare(`
-    UPDATE users SET display_name = ?, city = ?, country = ?, units = ? WHERE id = ?
-  `).run(displayName || null, city || 'Hyderabad', country || 'India', units || 'kg', req.userId);
-  res.json({ message: 'Profile updated' });
+router.put('/profile', async (req, res) => {
+  const { city, country, units, display_name, displayName } = req.body;
+  const name = display_name || displayName || null;
+  try {
+    await db.execute({
+      sql: 'UPDATE users SET city = COALESCE(?, city), country = COALESCE(?, country), units = COALESCE(?, units), display_name = COALESCE(?, display_name) WHERE id = ?',
+      args: [city || null, country || null, units || null, name, req.userId]
+    });
+    res.json({ message: 'Profile updated' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
 });
 
-// PUT /api/user/onboarding
-router.put('/onboarding', (req, res) => {
-  db.prepare('UPDATE users SET onboarding_done = 1 WHERE id = ?').run(req.userId);
-  res.json({ message: 'Onboarding complete' });
+router.put('/onboarding', async (req, res) => {
+  try {
+    await db.execute({ sql: 'UPDATE users SET onboarding_done = 1 WHERE id = ?', args: [req.userId] });
+    res.json({ message: 'Onboarding complete' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update onboarding' });
+  }
 });
 
-// DELETE /api/user/data
-router.delete('/data', (req, res) => {
-  db.prepare('DELETE FROM activities WHERE user_id = ?').run(req.userId);
-  db.prepare('DELETE FROM user_tasks WHERE user_id = ?').run(req.userId);
-  db.prepare('UPDATE users SET current_streak = 0, last_logged_date = NULL WHERE id = ?').run(req.userId);
-  res.json({ message: 'All data deleted' });
+router.delete('/data', async (req, res) => {
+  try {
+    await db.execute({ sql: 'DELETE FROM activities WHERE user_id = ?', args: [req.userId] });
+    await db.execute({ sql: 'DELETE FROM user_tasks WHERE user_id = ?', args: [req.userId] });
+    res.json({ message: 'All data deleted' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete data' });
+  }
 });
 
-// POST /api/user/suggestions  — no API key needed, pure data-driven logic
-router.post('/suggestions', (req, res) => {
+router.post('/suggestions', async (req, res) => {
   const userId = req.userId;
   const weekStart = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
-
-  // Fetch last 7 days of activities
-  const activities = db.prepare(`
-    SELECT category, activity_name, amount, unit, co2_kg
-    FROM activities WHERE user_id = ? AND date >= ?
-    ORDER BY co2_kg DESC
-  `).all(userId, weekStart);
-
-  // Fetch user city and city average
-  const user = db.prepare('SELECT city FROM users WHERE id = ?').get(userId);
-  const cityAvg = db.prepare('SELECT avg_daily_co2_kg FROM city_averages WHERE city = ?').get(user.city || 'Hyderabad');
-  const cityAvgVal = cityAvg ? cityAvg.avg_daily_co2_kg : 5.2;
-
-  // Calculate user daily average
-  const userAvgRow = db.prepare(`
-    SELECT AVG(daily_total) as avg FROM (
-      SELECT date, SUM(co2_kg) as daily_total FROM activities
-      WHERE user_id = ? AND date >= ? GROUP BY date
-    )
-  `).get(userId, weekStart);
-  const userAvg = userAvgRow.avg || 0;
-
-  // Sum CO2 per category over the week
-  const catTotals = {};
-  for (const a of activities) {
-    catTotals[a.category] = (catTotals[a.category] || 0) + a.co2_kg;
-  }
-
-  const activityNames = activities.map(a => a.activity_name);
-
-  // Suggestion bank — each entry has a category, condition fn, icon, and text
-  const bank = [
-    // TRANSPORT
-    {
-      category: 'transport',
-      condition: () => activityNames.some(n => n.includes('Car')),
-      icon: '🚌',
-      text: 'You logged car trips this week — try swapping even one trip to the bus or train. Public transport cuts per-km emissions by up to 75% and costs far less.'
-    },
-    {
-      category: 'transport',
-      condition: () => activityNames.some(n => n.includes('Flight')),
-      icon: '🚆',
-      text: 'A short-haul flight generates roughly 6x more CO2 than the same journey by train. Next time, check if a train is an option — it makes a huge difference.'
-    },
-    {
-      category: 'transport',
-      condition: () => activityNames.some(n => n.includes('Motorcycle') || n.includes('Auto')),
-      icon: '🚶',
-      text: 'For short trips under 2 km, walking or cycling produces zero emissions and is often just as fast in traffic. Your daily footprint could drop noticeably with this swap.'
-    },
-    {
-      category: 'transport',
-      condition: () => (catTotals['transport'] || 0) > 5,
-      icon: '🏠',
-      text: 'Transport is your biggest emission source this week. If your work allows it, even one work-from-home day saves 3-4 kg CO2 and reduces fuel costs at the same time.'
-    },
-
-    // FOOD
-    {
-      category: 'food',
-      condition: () => activityNames.some(n => n.includes('Beef')),
-      icon: '🥗',
-      text: 'Beef is one of the highest-carbon foods — one beef meal emits roughly 13x more CO2 than a vegetarian meal. Replacing even two beef meals a week makes a real impact.'
-    },
-    {
-      category: 'food',
-      condition: () => activityNames.some(n => n.includes('Chicken') || n.includes('Pork') || n.includes('Fish')),
-      icon: '🌱',
-      text: 'You ate meat several times this week. Trying "Meatless Monday" — one plant-based day — can cut your weekly food emissions by 15-20% with minimal effort.'
-    },
-    {
-      category: 'food',
-      condition: () => (catTotals['food'] || 0) > 10,
-      icon: '🥦',
-      text: 'Food is your top emission category this week. Shifting toward plant-based meals even 2-3 days a week is one of the highest-impact personal changes you can make.'
-    },
-
-    // ENERGY
-    {
-      category: 'energy',
-      condition: () => activityNames.some(n => n.includes('Electricity')),
-      icon: '🌙',
-      text: 'Try running heavy appliances like washing machines at night when grid demand is lower. Turning off standby devices alone can save up to 10% of home electricity use.'
-    },
-    {
-      category: 'energy',
-      condition: () => activityNames.some(n => n.includes('LPG') || n.includes('Gas')),
-      icon: '☀️',
-      text: 'LPG cooking contributes to your footprint daily. Switching to an induction cooktop runs on electricity and gets cleaner as the grid adds more renewable energy.'
-    },
-    {
-      category: 'energy',
-      condition: () => (catTotals['energy'] || 0) > 8,
-      icon: '❄️',
-      text: 'Energy is a big part of your footprint this week. Setting your AC 2°C warmer (e.g. 26°C instead of 24°C) can reduce AC energy use by around 10% with barely any comfort difference.'
-    },
-
-    // SHOPPING
-    {
-      category: 'shopping',
-      condition: () => activityNames.some(n => n.includes('Online Shopping')),
-      icon: '🛒',
-      text: 'Each online order generates 3-5 kg CO2 from delivery alone. Batching your orders — one delivery per week instead of several small ones — cuts packaging and transport emissions significantly.'
-    },
-    {
-      category: 'shopping',
-      condition: () => activityNames.some(n => n.includes('Clothing')),
-      icon: '♻️',
-      text: 'A new clothing item generates ~8 kg CO2 on average. Before buying new, check if it is available second-hand — it is cheaper and far lower in emissions.'
-    },
-    {
-      category: 'shopping',
-      condition: () => activityNames.some(n => n.includes('Smartphone') || n.includes('Laptop')),
-      icon: '🔋',
-      text: 'Electronics carry very high embedded carbon — a smartphone is ~70 kg CO2, a laptop ~300 kg. Keeping devices 1-2 years longer than usual is one of the most effective tech emission reductions.'
-    },
-
-    // CITY COMPARISON
-    {
-      category: 'general',
-      condition: () => userAvg > cityAvgVal * 1.2,
-      icon: '📉',
-      text: `Your daily average (${userAvg.toFixed(1)} kg) is above the ${user.city || 'city'} average of ${cityAvgVal} kg. Focus on your top category this week and aim to bring it down by just 10% — small steps add up fast.`
-    },
-    {
-      category: 'general',
-      condition: () => userAvg > 0 && userAvg <= cityAvgVal,
-      icon: '🏆',
-      text: `Great work — your daily average (${userAvg.toFixed(1)} kg) is already below the ${user.city || 'city'} average of ${cityAvgVal} kg. Keep logging to maintain your streak and climb the leaderboard!`
-    },
-
-    // FALLBACK
-    {
-      category: 'general',
-      condition: () => activities.length === 0,
-      icon: '📝',
-      text: 'No activities logged this week yet. Start with your daily commute and meals — even a few entries give you a clear picture of where your footprint comes from.'
-    },
-    {
-      category: 'general',
-      condition: () => true,
-      icon: '🌿',
-      text: 'Consistency is key — logging daily keeps you aware and motivated. Users who log 5+ days a week tend to reduce their footprint 30% faster than those who log occasionally.'
+  try {
+    const activitiesRes = await db.execute({ sql: 'SELECT category, activity_name, amount, unit, co2_kg FROM activities WHERE user_id = ? AND date >= ? ORDER BY co2_kg DESC', args: [userId, weekStart] });
+    const activities = activitiesRes.rows;
+    const userRes = await db.execute({ sql: 'SELECT city FROM users WHERE id = ?', args: [userId] });
+    const user = userRes.rows[0];
+    const cityAvgRes = await db.execute({ sql: 'SELECT avg_daily_co2_kg FROM city_averages WHERE city = ?', args: [user.city || 'Hyderabad'] });
+    const cityAvgVal = cityAvgRes.rows[0] ? cityAvgRes.rows[0].avg_daily_co2_kg : 5.2;
+    const userAvgRes = await db.execute({ sql: 'SELECT AVG(daily_total) as avg FROM (SELECT date, SUM(co2_kg) as daily_total FROM activities WHERE user_id = ? AND date >= ? GROUP BY date)', args: [userId, weekStart] });
+    const userAvg = userAvgRes.rows[0].avg || 0;
+    const catTotals = {};
+    for (const a of activities) catTotals[a.category] = (catTotals[a.category] || 0) + a.co2_kg;
+    const activityNames = activities.map(a => a.activity_name);
+    const bank = [
+      { category: 'transport', condition: () => activityNames.some(n => n.includes('Car')), icon: '🚌', text: 'You logged car trips this week — try swapping even one trip to the bus or train. Public transport cuts per-km emissions by up to 75%.' },
+      { category: 'transport', condition: () => activityNames.some(n => n.includes('Flight')), icon: '🚆', text: 'A short-haul flight generates roughly 6x more CO2 than the same journey by train. Next time, check if a train is an option.' },
+      { category: 'transport', condition: () => activityNames.some(n => n.includes('Motorcycle') || n.includes('Auto')), icon: '🚶', text: 'For short trips under 2 km, walking or cycling produces zero emissions and is often just as fast in traffic.' },
+      { category: 'transport', condition: () => (catTotals['transport'] || 0) > 5, icon: '🏠', text: 'Transport is your biggest emission source this week. Even one work-from-home day saves 3-4 kg CO2.' },
+      { category: 'food', condition: () => activityNames.some(n => n.includes('Beef')), icon: '🥗', text: 'Beef is one of the highest-carbon foods — one beef meal emits roughly 13x more CO2 than a vegetarian meal.' },
+      { category: 'food', condition: () => activityNames.some(n => n.includes('Chicken') || n.includes('Pork') || n.includes('Fish')), icon: '🌱', text: 'Trying Meatless Monday — one plant-based day — can cut your weekly food emissions by 15-20% with minimal effort.' },
+      { category: 'food', condition: () => (catTotals['food'] || 0) > 10, icon: '🥦', text: 'Food is your top emission category this week. Shifting toward plant-based meals even 2-3 days a week makes a big difference.' },
+      { category: 'energy', condition: () => activityNames.some(n => n.includes('Electricity')), icon: '🌙', text: 'Try running heavy appliances at night when grid demand is lower. Turning off standby devices can save up to 10% of home electricity.' },
+      { category: 'energy', condition: () => activityNames.some(n => n.includes('LPG') || n.includes('Gas')), icon: '☀️', text: 'LPG cooking contributes to your footprint daily. Switching to an induction cooktop gets cleaner as the grid adds more renewable energy.' },
+      { category: 'energy', condition: () => (catTotals['energy'] || 0) > 8, icon: '❄️', text: 'Setting your AC 2 degrees warmer can reduce AC energy use by around 10% with barely any comfort difference.' },
+      { category: 'shopping', condition: () => activityNames.some(n => n.includes('Online Shopping')), icon: '🛒', text: 'Batching your orders — one delivery per week instead of several small ones — cuts packaging and transport emissions significantly.' },
+      { category: 'shopping', condition: () => activityNames.some(n => n.includes('Clothing')), icon: '♻️', text: 'A new clothing item generates around 8 kg CO2 on average. Before buying new, check if it is available second-hand.' },
+      { category: 'shopping', condition: () => activityNames.some(n => n.includes('Smartphone') || n.includes('Laptop')), icon: '🔋', text: 'Keeping devices 1-2 years longer than usual is one of the most effective ways to reduce tech emissions.' },
+      { category: 'general', condition: () => userAvg > cityAvgVal * 1.2, icon: '📉', text: `Your daily average (${Number(userAvg).toFixed(1)} kg) is above the ${user.city || 'city'} average of ${cityAvgVal} kg. Focus on your top category and aim to bring it down by just 10%.` },
+      { category: 'general', condition: () => userAvg > 0 && userAvg <= cityAvgVal, icon: '🏆', text: `Great work — your daily average (${Number(userAvg).toFixed(1)} kg) is already below the ${user.city || 'city'} average of ${cityAvgVal} kg. Keep logging!` },
+      { category: 'general', condition: () => activities.length === 0, icon: '📝', text: 'No activities logged this week yet. Start with your daily commute and meals to see where your footprint comes from.' },
+      { category: 'general', condition: () => true, icon: '🌿', text: 'Consistency is key — logging daily keeps you aware and motivated. Small actions every day add up to big change.' }
+    ];
+    const sortedCats = Object.entries(catTotals).sort((a, b) => b[1] - a[1]).map(e => e[0]);
+    const picked = [];
+    const usedCategories = new Set();
+    for (const cat of [...sortedCats, 'general']) {
+      if (picked.length >= 3) break;
+      const match = bank.find(s => s.category === cat && !usedCategories.has(cat) && s.condition());
+      if (match) { picked.push(match); usedCategories.add(cat); }
     }
-  ];
-
-  // Pick 3 suggestions: one per highest-emission category, then fill from general
-  const sortedCats = Object.entries(catTotals).sort((a, b) => b[1] - a[1]).map(e => e[0]);
-  const picked = [];
-  const usedCategories = new Set();
-
-  for (const cat of [...sortedCats, 'general']) {
-    if (picked.length >= 3) break;
-    const match = bank.find(s => s.category === cat && !usedCategories.has(cat) && s.condition());
-    if (match) { picked.push(match); usedCategories.add(cat); }
+    for (const s of bank) {
+      if (picked.length >= 3) break;
+      if (!picked.includes(s) && s.condition()) picked.push(s);
+    }
+    res.json({ suggestions: picked.slice(0, 3).map(s => `${s.icon} ${s.text}`) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to get suggestions' });
   }
-
-  // Fill any remaining slots
-  for (const s of bank) {
-    if (picked.length >= 3) break;
-    if (!picked.includes(s) && s.condition()) picked.push(s);
-  }
-
-  const suggestions = picked.slice(0, 3).map(s => `${s.icon} ${s.text}`);
-  res.json({ suggestions });
 });
 
 module.exports = router;

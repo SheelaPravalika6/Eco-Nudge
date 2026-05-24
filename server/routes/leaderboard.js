@@ -5,48 +5,67 @@ const authMiddleware = require('../middleware/auth');
 const router = express.Router();
 router.use(authMiddleware);
 
-// GET /api/leaderboard/emissions
-router.get('/emissions', (req, res) => {
-  const weekStart = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
-  const rows = db.prepare(`
-    SELECT u.id, u.email, u.city, SUM(a.co2_kg) as total_co2
-    FROM users u
-    JOIN activities a ON a.user_id = u.id
-    WHERE a.date >= ?
-    GROUP BY u.id
-    ORDER BY total_co2 ASC
-    LIMIT 10
-  `).all(weekStart);
-
-  res.json(rows.map((r, i) => ({
-    rank: i + 1,
-    name: r.email.split('@')[0],
-    city: r.city || 'Unknown',
-    co2_this_week: parseFloat(r.total_co2.toFixed(2)),
-    isCurrentUser: r.id === req.userId
-  })));
+// Points leaderboard
+router.get('/points', async (req, res) => {
+  try {
+    const result = await db.execute(`
+      SELECT u.id, u.display_name, u.city,
+        COALESCE(SUM(ut.points_earned), 0) as total_points,
+        COUNT(ut.id) as tasks_completed
+      FROM users u
+      LEFT JOIN user_tasks ut ON u.id = ut.user_id
+      GROUP BY u.id
+      ORDER BY total_points DESC
+      LIMIT 20
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch leaderboard' });
+  }
 });
 
-// GET /api/leaderboard/points
-router.get('/points', (req, res) => {
+// Emissions leaderboard
+router.get('/emissions', async (req, res) => {
   const weekStart = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
-  const rows = db.prepare(`
-    SELECT u.id, u.email, u.city, SUM(ut.points_earned) as total_points
-    FROM users u
-    JOIN user_tasks ut ON ut.user_id = u.id
-    WHERE DATE(ut.completed_at) >= ?
-    GROUP BY u.id
-    ORDER BY total_points DESC
-    LIMIT 10
-  `).all(weekStart);
+  try {
+    const result = await db.execute({
+      sql: `
+        SELECT u.id, u.display_name, u.city,
+          COALESCE(SUM(a.co2_kg), 0) as co2_this_week
+        FROM users u
+        LEFT JOIN activities a ON u.id = a.user_id AND a.date >= ?
+        GROUP BY u.id
+        HAVING co2_this_week > 0
+        ORDER BY co2_this_week ASC
+        LIMIT 20
+      `,
+      args: [weekStart]
+    });
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch leaderboard' });
+  }
+});
 
-  res.json(rows.map((r, i) => ({
-    rank: i + 1,
-    name: r.email.split('@')[0],
-    city: r.city || 'Unknown',
-    points: r.total_points,
-    isCurrentUser: r.id === req.userId
-  })));
+// Default route
+router.get('/', async (req, res) => {
+  try {
+    const result = await db.execute(`
+      SELECT u.id, u.display_name, u.city,
+        COALESCE(SUM(ut.points_earned), 0) as total_points,
+        COUNT(ut.id) as tasks_completed
+      FROM users u
+      LEFT JOIN user_tasks ut ON u.id = ut.user_id
+      GROUP BY u.id
+      ORDER BY total_points DESC
+      LIMIT 20
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch leaderboard' });
+  }
 });
 
 module.exports = router;

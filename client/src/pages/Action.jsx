@@ -20,47 +20,55 @@ export default function Action() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('All');
   const [confetti, setConfetti] = useState(false);
-  const [lbTab, setLbTab] = useState('emissions');
+  const [lbTab, setLbTab] = useState('points');
   const [lbData, setLbData] = useState([]);
   const [lbLoading, setLbLoading] = useState(true);
 
   const fetchTasks = useCallback(() => {
     api.get('/tasks').then(res => {
-      setTasks(res.data.tasks);
-      setTotalPoints(res.data.totalPoints);
-    }).finally(() => setLoading(false));
+      const taskList = Array.isArray(res.data) ? res.data : res.data.tasks || [];
+      const points = res.data.totalPoints || 0;
+      setTasks(taskList);
+      setTotalPoints(points);
+    }).catch(() => setTasks([])).finally(() => setLoading(false));
   }, []);
 
   const fetchLeaderboard = useCallback(() => {
     setLbLoading(true);
-    api.get(`/leaderboard/${lbTab}`).then(res => setLbData(res.data)).finally(() => setLbLoading(false));
+    api.get(`/leaderboard/${lbTab}`).then(res => {
+      const data = Array.isArray(res.data) ? res.data : [];
+      setLbData(data);
+    }).catch(() => setLbData([])).finally(() => setLbLoading(false));
   }, [lbTab]);
 
   useEffect(() => { fetchTasks(); }, []);
-  useEffect(() => { fetchLeaderboard(); const interval = setInterval(fetchLeaderboard, 60000); return () => clearInterval(interval); }, [fetchLeaderboard]);
+  useEffect(() => {
+    fetchLeaderboard();
+    const interval = setInterval(fetchLeaderboard, 60000);
+    return () => clearInterval(interval);
+  }, [fetchLeaderboard]);
 
   const completeTask = async (task) => {
     try {
-      const res = await api.post('/tasks/complete', { task_id: task.id });
-      setTotalPoints(res.data.totalPoints);
+      await api.post('/tasks/complete', { taskId: task.id });
       setConfetti(true);
       fetchTasks();
+      fetchLeaderboard();
     } catch (err) {
       alert(err.response?.data?.error || 'Error');
     }
   };
 
   const filters = ['All', 'easy', 'medium', 'hard', 'transport', 'food', 'energy', 'shopping'];
-  const filteredTasks = tasks.filter(t => {
+  const filteredTasks = Array.isArray(tasks) ? tasks.filter(t => {
     if (filter === 'All') return true;
     return t.difficulty === filter || t.category === filter;
-  });
+  }) : [];
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8 pb-24 md:pb-8">
       {confetti && <Confetti onDone={() => setConfetti(false)} />}
 
-      {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-green-800">✅ Take Action</h1>
         <div className="bg-green-100 text-green-800 font-bold px-4 py-2 rounded-full flex items-center gap-2">
@@ -68,7 +76,6 @@ export default function Action() {
         </div>
       </div>
 
-      {/* Filters */}
       <div className="flex gap-2 flex-wrap mb-6">
         {filters.map(f => (
           <button key={f} onClick={() => setFilter(f)}
@@ -78,16 +85,20 @@ export default function Action() {
         ))}
       </div>
 
-      {/* Task Grid */}
       {loading ? (
         <div className="grid md:grid-cols-2 gap-4 mb-8">
           {[...Array(6)].map((_, i) => <div key={i} className="skeleton h-40 rounded-2xl" />)}
+        </div>
+      ) : filteredTasks.length === 0 ? (
+        <div className="text-center py-12 text-gray-400 mb-8">
+          <div className="text-3xl mb-2">📋</div>
+          <p>No tasks found. Try a different filter.</p>
         </div>
       ) : (
         <div className="grid md:grid-cols-2 gap-4 mb-8">
           {filteredTasks.map(task => (
             <div key={task.id}
-              className={`bg-white rounded-2xl shadow-sm border p-5 transition ${task.completedToday ? 'border-green-300 bg-green-50' : 'border-gray-100 hover:border-green-300'}`}>
+              className={`bg-white rounded-2xl shadow-sm border p-5 transition ${task.completed ? 'border-green-300 bg-green-50' : 'border-gray-100 hover:border-green-300'}`}>
               <div className="flex items-start justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <span className="text-xl">{CATEGORY_ICONS[task.category]}</span>
@@ -95,32 +106,29 @@ export default function Action() {
                     {task.difficulty}
                   </span>
                 </div>
-                {task.completedToday && <span className="text-green-500 text-xl">✅</span>}
+                {task.completed && <span className="text-green-500 text-xl">✅</span>}
               </div>
               <h3 className="font-bold text-gray-800 mb-1">{task.title}</h3>
               <p className="text-gray-500 text-sm mb-3">{task.description}</p>
               <div className="flex items-center justify-between text-sm">
-                <div className="text-gray-500">
-                  🌿 Saves ~{task.co2_saved_estimate} kg CO₂
-                </div>
+                <div className="text-gray-500">🌿 Saves ~{task.co2_saved_estimate} kg CO₂</div>
                 <div className="text-green-600 font-semibold">+{task.points} pts</div>
               </div>
               <button
                 onClick={() => completeTask(task)}
-                disabled={task.completedToday}
-                className={`mt-3 w-full py-2 rounded-xl text-sm font-medium transition ${task.completedToday ? 'bg-green-100 text-green-600 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 text-white'}`}>
-                {task.completedToday ? '✅ Done Today!' : 'Mark Complete'}
+                disabled={task.completed}
+                className={`mt-3 w-full py-2 rounded-xl text-sm font-medium transition ${task.completed ? 'bg-green-100 text-green-600 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 text-white'}`}>
+                {task.completed ? '✅ Done!' : 'Mark Complete'}
               </button>
             </div>
           ))}
         </div>
       )}
 
-      {/* Leaderboard */}
       <div className="bg-white rounded-2xl shadow-sm border border-green-50 p-6">
         <h2 className="text-lg font-semibold text-gray-800 mb-4">🏆 This Week's Top Eco Warriors</h2>
         <div className="flex gap-2 mb-4">
-          {['emissions', 'points'].map(tab => (
+          {['points', 'emissions'].map(tab => (
             <button key={tab} onClick={() => setLbTab(tab)}
               className={`px-4 py-1.5 rounded-full text-sm font-medium transition ${lbTab === tab ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-green-50'}`}>
               {tab === 'emissions' ? '🌍 Lowest Emissions' : '⭐ Most Points'}
@@ -147,12 +155,14 @@ export default function Action() {
                 </tr>
               </thead>
               <tbody>
-                {lbData.map(row => (
-                  <tr key={row.rank} className={`border-b last:border-0 ${row.isCurrentUser ? 'bg-green-50 font-semibold' : ''}`}>
-                    <td className="py-2 pr-3">{MEDAL[row.rank] || `#${row.rank}`}</td>
-                    <td className="py-2 pr-3">{row.name} {row.isCurrentUser && '(you)'}</td>
+                {lbData.map((row, i) => (
+                  <tr key={i} className="border-b last:border-0">
+                    <td className="py-2 pr-3">{MEDAL[i + 1] || `#${i + 1}`}</td>
+                    <td className="py-2 pr-3">{row.display_name}</td>
                     <td className="py-2 pr-3 text-gray-500">{row.city}</td>
-                    <td className="py-2 pr-3">{lbTab === 'emissions' ? `${row.co2_this_week} kg` : `${row.points} pts`}</td>
+                    <td className="py-2 pr-3">
+                      {lbTab === 'emissions' ? `${Number(row.co2_this_week).toFixed(2)} kg` : `${row.total_points} pts`}
+                    </td>
                   </tr>
                 ))}
               </tbody>
